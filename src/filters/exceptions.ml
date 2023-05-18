@@ -3,8 +3,6 @@ open Ast
 open Type
 open Common
 open Typecore
-open TyperBase
-open Fields
 open Error
 
 let haxe_exception_type_path = (["haxe"],"Exception")
@@ -36,12 +34,12 @@ let is_dynamic t =
 let haxe_exception_static_call ctx method_name args p =
 	let method_field =
 		try PMap.find method_name ctx.haxe_exception_class.cl_statics
-		with Not_found -> typing_error ("haxe.Exception has no field " ^ method_name) p
+		with Not_found -> raise_typing_error ("haxe.Exception has no field " ^ method_name) p
 	in
 	let return_type =
 		match follow method_field.cf_type with
 		| TFun(_,t) -> t
-		| _ -> typing_error ("haxe.Exception." ^ method_name ^ " is not a function and cannot be called") p
+		| _ -> raise_typing_error ("haxe.Exception." ^ method_name ^ " is not a function and cannot be called") p
 	in
 	add_dependency ctx.typer.curclass.cl_module ctx.haxe_exception_class.cl_module;
 	make_static_call ctx.typer ctx.haxe_exception_class method_field (fun t -> t) args return_type p
@@ -57,10 +55,10 @@ let haxe_exception_instance_call ctx haxe_exception method_name args p =
 			match follow cf.cf_type with
 			| TFun(_,t) -> t
 			| _ ->
-				typing_error ((s_type (print_context()) haxe_exception.etype) ^ "." ^ method_name ^ " is not a function and cannot be called") p
+				raise_typing_error ((s_type (print_context()) haxe_exception.etype) ^ "." ^ method_name ^ " is not a function and cannot be called") p
 		in
 		make_call ctx.typer efield args rt p
-	| _ -> typing_error ((s_type (print_context()) haxe_exception.etype) ^ "." ^ method_name ^ " is expected to be an instance method") p
+	| _ -> raise_typing_error ((s_type (print_context()) haxe_exception.etype) ^ "." ^ method_name ^ " is expected to be an instance method") p
 
 (**
 	Generate `Std.isOfType(e, t)`
@@ -70,16 +68,16 @@ let std_is ctx e t p =
 	let std_cls =
 		match Typeload.load_type_raise ctx.typer ([],"Std") "Std" p with
 		| TClassDecl cls -> cls
-		| _ -> typing_error "Std is expected to be a class" p
+		| _ -> raise_typing_error "Std is expected to be a class" p
 	in
 	let isOfType_field =
 		try PMap.find "isOfType" std_cls.cl_statics
-		with Not_found -> typing_error ("Std has no field isOfType") p
+		with Not_found -> raise_typing_error ("Std has no field isOfType") p
 	in
 	let return_type =
 		match follow isOfType_field.cf_type with
 		| TFun(_,t) -> t
-		| _ -> typing_error ("Std.isOfType is not a function and cannot be called") p
+		| _ -> raise_typing_error ("Std.isOfType is not a function and cannot be called") p
 	in
 	let type_expr = { eexpr = TTypeExpr(module_type_of_type t); etype = t; epos = p } in
 	make_static_call ctx.typer std_cls isOfType_field (fun t -> t) [e; type_expr] return_type p
@@ -107,13 +105,13 @@ let is_in_list t lst =
 (**
 	Check if `t` can be thrown without wrapping.
 *)
-let rec is_native_throw ctx t =
+let is_native_throw ctx t =
 	ctx.throws_anything || is_in_list t ctx.config.ec_native_throws
 
 (**
 	Check if `t` can be caught without wrapping.
 *)
-let rec is_native_catch ctx t =
+let is_native_catch ctx t =
 	ctx.catches_anything || is_in_list t ctx.config.ec_native_catches
 
 (**
@@ -162,7 +160,7 @@ let rec contains_throw_or_try e =
 	Check if expression represents an exception wrapped with `haxe.Exception.thrown`
 *)
 let is_wrapped_exception e =
-	match e.eexpr with 
+	match e.eexpr with
 	| TMeta ((Meta.WrappedException, _, _), _) -> true
 	| _ -> false
 
@@ -196,11 +194,11 @@ let throw_native ctx e_thrown t p =
 	let e_native =
 		if requires_wrapped_throw ctx e_thrown then
 			let thrown = haxe_exception_static_call ctx "thrown" [e_thrown] p in
-			let wrapped = 
+			let wrapped =
 				if is_dynamic ctx.base_throw_type then thrown
 				else mk_cast thrown ctx.base_throw_type p
 			in
-			mk (TMeta ((Meta.WrappedException,[],p),wrapped)) thrown.etype p
+			mk (TMeta ((Meta.WrappedException,[],p),wrapped)) wrapped.etype p
 		else
 			e_thrown
 	in
@@ -219,7 +217,7 @@ class catch ctx catch_local catch_pos =
 			let v =
 				match hx_exception_var with
 				| None ->
-					let v = alloc_var VGenerated "`" ctx.haxe_exception_type p in
+					let v = alloc_var VGenerated gen_local_prefix ctx.haxe_exception_type p in
 					hx_exception_var <- Some v;
 					v
 				| Some v -> v
@@ -230,7 +228,7 @@ class catch ctx catch_local catch_pos =
 			let v =
 				match unwrapped_var with
 				| None ->
-					let v = alloc_var VGenerated "`" t_dynamic p in
+					let v = alloc_var VGenerated gen_local_prefix t_dynamic p in
 					unwrapped_var <- Some v;
 					(* unwrapped_local <- Some e; *)
 					v
@@ -264,7 +262,7 @@ let catches_to_ifs ctx catches t p =
 	match catches with
 	| [] -> []
 	| ((first_v, first_body) :: _) as rest ->
-		let catch_var = alloc_var VGenerated "`" ctx.wildcard_catch_type first_v.v_pos in
+		let catch_var = alloc_var VGenerated gen_local_prefix ctx.wildcard_catch_type first_v.v_pos in
 		add_var_flag catch_var VCaught;
 		let catch_local = mk (TLocal catch_var) catch_var.v_type catch_var.v_pos in
 		let body =
@@ -398,7 +396,7 @@ let catches_as_value_exception ctx non_value_exception_catches value_exception_c
 			| Some (catch_var, _) ->
 				catch_var
 			| None ->
-				let catch_var = alloc_var VGenerated "`" ctx.value_exception_type first_v.v_pos in
+				let catch_var = alloc_var VGenerated gen_local_prefix ctx.value_exception_type first_v.v_pos in
 				add_var_flag catch_var VCaught;
 				catch_var
 		in
@@ -542,16 +540,16 @@ let filter tctx =
 		and haxe_exception_type, haxe_exception_class =
 			match Typeload.load_instance tctx (tp haxe_exception_type_path) true with
 			| TInst(cls,_) as t -> t,cls
-			| _ -> typing_error "haxe.Exception is expected to be a class" null_pos
+			| _ -> raise_typing_error "haxe.Exception is expected to be a class" null_pos
 		and value_exception_type, value_exception_class =
 			match Typeload.load_instance tctx (tp value_exception_type_path) true with
 			| TInst(cls,_) as t -> t,cls
-			| _ -> typing_error "haxe.ValueException is expected to be a class" null_pos
+			| _ -> raise_typing_error "haxe.ValueException is expected to be a class" null_pos
 		and haxe_native_stack_trace =
 			match Typeload.load_instance tctx (tp (["haxe"],"NativeStackTrace")) true with
 			| TInst(cls,_) -> cls
 			| TAbstract({ a_impl = Some cls },_) -> cls
-			| _ -> typing_error "haxe.NativeStackTrace is expected to be a class or an abstract" null_pos
+			| _ -> raise_typing_error "haxe.NativeStackTrace is expected to be a class or an abstract" null_pos
 		in
 		let is_path_of_dynamic (pack,name) =
 			name = "Dynamic" && (pack = [] || pack = ["StdTypes"])
@@ -587,7 +585,7 @@ let filter tctx =
 			if contains_throw_or_try e then run e
 			else stub e
 		)
-	| Cross -> stub
+	| Cross | CustomTarget _ -> stub
 
 (**
 	Inserts `haxe.NativeStackTrace.saveStack(e)` in non-haxe.Exception catches.
@@ -601,7 +599,7 @@ let insert_save_stacks tctx =
 			match Typeload.load_type_def tctx null_pos tp with
 			| TClassDecl cls -> cls
 			| TAbstractDecl { a_impl = Some cls } -> cls
-			| _ -> typing_error "haxe.NativeStackTrace is expected to be a class or an abstract" null_pos
+			| _ -> raise_typing_error "haxe.NativeStackTrace is expected to be a class or an abstract" null_pos
 		in
 		let rec contains_insertion_points e =
 			match e.eexpr with
@@ -617,12 +615,12 @@ let insert_save_stacks tctx =
 			if has_feature tctx.com "haxe.NativeStackTrace.exceptionStack" then
 				let method_field =
 					try PMap.find "saveStack" native_stack_trace_cls.cl_statics
-					with Not_found -> typing_error ("haxe.NativeStackTrace has no field saveStack") null_pos
+					with Not_found -> raise_typing_error ("haxe.NativeStackTrace has no field saveStack") null_pos
 				in
 				let return_type =
 					match follow method_field.cf_type with
 					| TFun(_,t) -> t
-					| _ -> typing_error ("haxe.NativeStackTrace." ^ method_field.cf_name ^ " is not a function and cannot be called") null_pos
+					| _ -> raise_typing_error ("haxe.NativeStackTrace." ^ method_field.cf_name ^ " is not a function and cannot be called") null_pos
 				in
 				let catch_local = mk (TLocal catch_var) catch_var.v_type catch_var.v_pos in
 				begin
@@ -676,7 +674,7 @@ let patch_constructors tctx =
 					let this = { eexpr = TConst(TThis); etype = t; epos = p } in
 					let faccess =
 						try quick_field t "__shiftStack"
-						with Not_found -> typing_error "haxe.Exception has no field __shiftStack" p
+						with Not_found -> raise_typing_error "haxe.Exception has no field __shiftStack" p
 					in
 					match faccess with
 					| FInstance (_,_,cf) ->
@@ -685,10 +683,10 @@ let patch_constructors tctx =
 							match follow cf.cf_type with
 							| TFun(_,t) -> t
 							| _ ->
-								typing_error "haxe.Exception.__shiftStack is not a function and cannot be called" cf.cf_name_pos
+								raise_typing_error "haxe.Exception.__shiftStack is not a function and cannot be called" cf.cf_name_pos
 						in
 						make_call tctx efield [] rt p
-					| _ -> typing_error "haxe.Exception.__shiftStack is expected to be an instance method" p
+					| _ -> raise_typing_error "haxe.Exception.__shiftStack is expected to be an instance method" p
 				in
 				TypeloadFunction.add_constructor tctx cls true cls.cl_name_pos;
 				Option.may (fun cf -> ignore(follow cf.cf_type)) cls.cl_constructor;

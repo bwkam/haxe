@@ -1,20 +1,16 @@
 open Globals
 open Ast
 open Common
-open Filename
 open Timer
 open DisplayTypes.DisplayMode
 open DisplayTypes.CompletionResultKind
 open CompletionItem
 open CompletionClassField
 open CompletionEnumField
-open ClassFieldOrigin
 open DisplayException
 open Type
-open Display
 open DisplayTypes
 open CompletionModuleType
-open Typecore
 open Genjson
 open CompilationContext
 open DisplayProcessingGlobals
@@ -351,7 +347,7 @@ let handle_type_path_exception ctx p c is_import pos =
 				let ctx = Typer.create com in
 				DisplayPath.TypePathHandler.complete_type_path_inner ctx p c cur_package is_import
 		end with Common.Abort msg ->
-			located_error ctx msg;
+			error_ext ctx msg;
 			None
 	in
 	begin match ctx.com.json_out,fields with

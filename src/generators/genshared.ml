@@ -278,7 +278,7 @@ object(self)
 				in
 				loop csup;
 				(c,cf)
-			| None -> Error.typing_error "Could not find overload constructor" e.epos
+			| None -> Error.raise_typing_error "Could not find overload constructor" e.epos
 		in
 		let find_super_ctor el =
 			let _,cf = find_super_ctor el in
@@ -369,7 +369,7 @@ object(self)
 					DynArray.add field_infos info;
 					cf.cf_meta <- (Meta.Custom ":jvm.fieldInfo",[(EConst (Int (string_of_int index, None)),null_pos)],null_pos) :: cf.cf_meta;
 					if not (Meta.has Meta.HxGen cf.cf_meta) then begin
-						let rec loop next c =
+						let loop next c =
 							if (has_class_flag c CExtern) then make_native cf
 							else match c.cl_constructor with
 								| Some cf' when Meta.has Meta.HxGen cf'.cf_meta -> make_haxe cf

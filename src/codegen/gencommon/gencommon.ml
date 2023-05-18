@@ -60,7 +60,6 @@ open Globals
 open Option
 open Printf
 open ExtString
-open Codegen
 open Overloads
 
 (* ******************************************* *)
@@ -132,7 +131,7 @@ let path_of_md_def md_def =
 		| _ -> md_def.m_path
 
 let debug_type t = (s_type (print_context())) t
-let debug_expr = s_expr debug_type
+let debug_expr = s_expr_ast true "" debug_type
 
 let debug_mode = ref false
 let trace s = if !debug_mode then print_endline s else ()
@@ -730,9 +729,9 @@ let run_filters_from gen t filters =
 		()
 
 let run_filters gen =
-	let last_error = gen.gcon.located_error in
+	let last_error = gen.gcon.error_ext in
 	let has_errors = ref false in
-	gen.gcon.located_error <- (fun ?(depth=0) msg -> has_errors := true; last_error ~depth msg);
+	gen.gcon.error_ext <- (fun err -> has_errors := true; last_error err);
 	(* first of all, we have to make sure that the filters won't trigger a major Gc collection *)
 	let t = Timer.timer ["gencommon_filters"] in
 	(if Common.defined gen.gcon Define.GencommonDebug then debug_mode := true else debug_mode := false);

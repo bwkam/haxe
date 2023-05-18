@@ -4,20 +4,24 @@ open CompilationContext
 
 let run_or_diagnose ctx f arg =
 	let com = ctx.com in
-	let handle_diagnostics ?(depth = 0) msg kind =
+	let handle_diagnostics ?(depth = 0) msg p kind =
 		ctx.has_error <- true;
-		add_diagnostics_message ~depth com msg kind Error;
+		add_diagnostics_message ~depth com msg p kind Error;
 		DisplayOutput.emit_diagnostics ctx.com
 	in
 	if is_diagnostics com then begin try
 			f arg
 		with
-		| Error.Error(msg,p,depth) ->
-			handle_diagnostics ~depth (Error.error_msg p msg) DKCompilerMessage
+		| Error.Error err ->
+			ctx.has_error <- true;
+			Error.recurse_error (fun depth err ->
+				add_diagnostics_message ~depth com (Error.error_msg err.err_message) err.err_pos DKCompilerMessage Error
+			) err;
+			DisplayOutput.emit_diagnostics ctx.com
 		| Parser.Error(msg,p) ->
-			handle_diagnostics (located (Parser.error_msg msg) p) DKParserError
+			handle_diagnostics (Parser.error_msg msg) p DKParserError
 		| Lexer.Error(msg,p) ->
-			handle_diagnostics (located (Lexer.error_msg msg) p) DKParserError
+			handle_diagnostics (Lexer.error_msg msg) p DKParserError
 		end
 	else
 		f arg
@@ -67,14 +71,15 @@ let run_command ctx cmd =
 
 module Setup = struct
 	let initialize_target ctx com actx =
+		init_platform com;
 		let add_std dir =
 			com.class_path <- List.filter (fun s -> not (List.mem s com.std_path)) com.class_path @ List.map (fun p -> p ^ dir ^ "/_std/") com.std_path @ com.std_path
 		in
 		match com.platform with
 			| Cross ->
-				(* no platform selected *)
-				set_platform com Cross "";
 				"?"
+			| CustomTarget name ->
+				name
 			| Flash ->
 				let rec loop = function
 					| [] -> ()
@@ -155,7 +160,6 @@ module Setup = struct
 		) com.defines.values;
 		Buffer.truncate buffer (Buffer.length buffer - 1);
 		Common.log com (Buffer.contents buffer);
-		Typecore.type_expr_ref := (fun ?(mode=MGet) ctx e with_type -> Typer.type_expr ~mode ctx e with_type);
 		com.callbacks#run com.callbacks#get_before_typer_create;
 		(* Native lib pass 1: Register *)
 		let fl = List.map (fun (file,extern) -> NativeLibraryHandler.add_native_lib com file extern) (List.rev native_libs) in
@@ -211,8 +215,10 @@ module Setup = struct
 		Common.define_value com Define.Haxe s_version;
 		Common.raw_define com "true";
 		Common.define_value com Define.Dce "std";
-		com.info <- (fun ?(depth=0) msg p -> message ctx (make_compiler_message msg p depth DKCompilerMessage Information));
-		com.warning <- (fun ?(depth=0) w options msg p ->
+		com.info <- (fun ?(depth=0) ?(from_macro=false) msg p ->
+			message ctx (make_compiler_message ~from_macro msg p depth DKCompilerMessage Information)
+		);
+		com.warning <- (fun ?(depth=0) ?(from_macro=false) w options msg p ->
 			match Warning.get_mode w (com.warning_options @ options) with
 			| WMEnable ->
 				let wobj = Warning.warning_obj w in
@@ -221,12 +227,12 @@ module Setup = struct
 				else
 					Printf.sprintf "(%s) %s" wobj.w_name msg
 				in
-				message ctx (make_compiler_message msg p depth DKCompilerMessage Warning)
+				message ctx (make_compiler_message ~from_macro msg p depth DKCompilerMessage Warning)
 			| WMDisable ->
 				()
 		);
-		com.located_error <- located_error ctx;
-		com.error <- (fun ?(depth = 0) msg p -> com.located_error ~depth (located msg p));
+		com.error_ext <- error_ext ctx;
+		com.error <- (fun ?(depth = 0) msg p -> com.error_ext (Error.make_error ~depth (Custom msg) p));
 		let filter_messages = (fun keep_errors predicate -> (List.filter (fun cm ->
 			(match cm.cm_severity with
 			| MessageSeverity.Error -> keep_errors;
@@ -244,6 +250,18 @@ module Setup = struct
 
 end
 
+let check_defines com =
+	if is_next com then begin
+		PMap.iter (fun k _ ->
+			try
+				let reason = Hashtbl.find Define.deprecation_lut k in
+				let p = { pfile = "-D " ^ k; pmin = -1; pmax = -1 } in
+				com.warning WDeprecatedDefine [] reason p
+			with Not_found ->
+				()
+		) com.defines.values
+	end
+
 (** Creates the typer context and types [classes] into it. *)
 let do_type ctx tctx actx =
 	let com = tctx.Typecore.com in
@@ -253,6 +271,7 @@ let do_type ctx tctx actx =
 	com.stage <- CInitMacrosStart;
 	List.iter (MacroContext.call_init_macro tctx) (List.rev actx.config_macros);
 	com.stage <- CInitMacrosDone;
+	check_defines ctx.com;
 	CommonCache.lock_signature com "after_init_macros";
 	com.callbacks#run com.callbacks#get_after_init_macros;
 	run_or_diagnose ctx (fun () ->
@@ -282,17 +301,37 @@ let finalize_typing ctx tctx =
 let filter ctx tctx =
 	let t = Timer.timer ["filters"] in
 	DeprecationCheck.run ctx.com;
-	Filters.run ctx.com tctx ctx.com.main;
+	Filters.run tctx ctx.com.main;
 	t()
 
-let compile ctx actx =
+let call_light_init_macro com path =
+	let open MacroContext in
+	let mctx = create_macro_context com in
+	let api = make_macro_com_api com null_pos in
+	let init = create_macro_interp api mctx in
+	MacroContext.MacroLight.call_init_macro com mctx api path;
+	(init,mctx)
+
+let compile ctx actx callbacks =
 	let com = ctx.com in
 	(* Set up display configuration *)
 	DisplayProcessing.process_display_configuration ctx;
 	let display_file_dot_path = DisplayProcessing.process_display_file com actx in
+	let mctx = match com.platform with
+		| CustomTarget name ->
+			begin try
+				Some (call_light_init_macro com (Printf.sprintf "%s.Init.init()" name))
+			with (Error.Error { err_message = Module_not_found ([pack],"Init") }) when pack = name ->
+				(* ignore if <target_name>.Init doesn't exist *)
+				None
+			end
+		| _ ->
+			None
+		in
 	(* Initialize target: This allows access to the appropriate std packages and sets the -D defines. *)
 	let ext = Setup.initialize_target ctx com actx in
-	com.config <- get_config com; (* make sure to adapt all flags changes defined after platform *)
+	update_platform_config com; (* make sure to adapt all flags changes defined after platform *)
+	callbacks.after_target_init ctx;
 	let t = Timer.timer ["init"] in
 	List.iter (fun f -> f()) (List.rev (actx.pre_compilation));
 	t();
@@ -302,6 +341,7 @@ let compile ctx actx =
 	end else begin
 		(* Actual compilation starts here *)
 		let tctx = Setup.create_typer_context ctx actx.native_libs in
+		tctx.g.macros <- mctx;
 		com.stage <- CTyperCreated;
 		let display_file_dot_path = DisplayProcessing.maybe_load_display_file_before_typing tctx display_file_dot_path in
 		begin try
@@ -335,10 +375,10 @@ try
 with
 	| Abort ->
 		()
-	| Error.Fatal_error (m,depth) ->
-		located_error ~depth ctx m
-	| Common.Abort msg ->
-		located_error ctx msg
+	| Error.Fatal_error err ->
+		error_ext ctx err
+	| Common.Abort err ->
+		error_ext ctx err
 	| Lexer.Error (m,p) ->
 		error ctx (Lexer.error_msg m) p
 	| Parser.Error (m,p) ->
@@ -351,14 +391,8 @@ with
 			error ctx (Printf.sprintf "You cannot access the %s package while %s (for %s)" pack (if pf = "macro" then "in a macro" else "targeting " ^ pf) (s_type_path m) ) p;
 			List.iter (error ~depth:1 ctx (Error.compl_msg "referenced here")) (List.rev pl);
 		end
-	| Error.Error (Stack stack,_,depth) -> (match stack with
-		| [] -> ()
-		| (e,p) :: stack -> begin
-			located_error ~depth ctx (Error.error_msg p e);
-			List.iter (fun (e,p) -> located_error ~depth:(depth+1) ctx (Error.error_msg p e)) stack;
-		end)
-	| Error.Error (m,p,depth) ->
-		located_error ~depth ctx (Error.error_msg p m)
+	| Error.Error err ->
+		error_ext ctx err
 	| Generic.Generic_Exception(m,p) ->
 		error ctx m p
 	| Arg.Bad msg ->
@@ -409,7 +443,10 @@ let process_actx ctx actx =
 	DisplayProcessing.process_display_arg ctx actx;
 	List.iter (fun s ->
 		ctx.com.warning WDeprecated [] s null_pos
-	) actx.deprecations
+	) actx.deprecations;
+	if defined ctx.com NoDeprecationWarnings then begin
+		ctx.com.warning_options <- [{wo_warning = WDeprecated; wo_mode = WMDisable}] :: ctx.com.warning_options
+	end
 
 let compile_ctx callbacks ctx =
 	let run ctx =
@@ -418,8 +455,7 @@ let compile_ctx callbacks ctx =
 		compile_safe ctx (fun () ->
 			let actx = Args.parse_args ctx.com in
 			process_actx ctx actx;
-			callbacks.after_arg_parsing ctx;
-			compile ctx actx;
+			compile ctx actx callbacks;
 		);
 		finalize ctx;
 		callbacks.after_compilation ctx;

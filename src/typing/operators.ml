@@ -9,11 +9,11 @@ open Calls
 open Fields
 open FieldAccess
 
-let check_error ctx err p depth = match err with
-	| Module_not_found ([],name) when Diagnostics.error_in_diagnostics_run ctx.com p ->
-		DisplayToplevel.handle_unresolved_identifier ctx name p true
+let check_error ctx err = match err.err_message with
+	| Module_not_found ([],name) when Diagnostics.error_in_diagnostics_run ctx.com err.err_pos ->
+		DisplayToplevel.handle_unresolved_identifier ctx name err.err_pos true
 	| _ ->
-		Common.located_display_error ~depth ctx.com (error_msg p err)
+		Common.display_error_ext ctx.com err
 
 module BinopResult = struct
 
@@ -88,14 +88,16 @@ module BinopResult = struct
 		| BinopSpecial(_,needs_assign) -> needs_assign
 end
 
-let check_assign ctx e =
+let rec check_assign ctx e =
 	match e.eexpr with
 	| TLocal v when has_var_flag v VFinal && not (Common.ignore_error ctx.com) ->
-		typing_error "Cannot assign to final" e.epos
+		raise_typing_error "Cannot assign to final" e.epos
 	| TLocal {v_extra = None} | TArray _ | TField _ | TIdent _ ->
 		()
 	| TConst TThis | TTypeExpr _ when ctx.untyped ->
 		()
+	| TMeta ((Meta.CompilerGenerated,_,_),e1) ->
+		check_assign ctx e1
 	| _ ->
 		if not (Common.ignore_error ctx.com) then
 			invalid_assign e.epos
@@ -209,7 +211,7 @@ let make_binop ctx op e1 e2 is_assign_op with_type p =
 			| KAbstract (a,tl) ->
 				try
 					AbstractCast.cast_or_unify_raise ctx tstring e p
-				with Error (Unify _,_,_) ->
+				with Error { err_message = Unify _ } ->
 					loop (Abstract.get_underlying_type a tl)
 		in
 		loop e.etype
@@ -290,7 +292,7 @@ let make_binop ctx op e1 e2 is_assign_op with_type p =
 		| KOther, _
 		| _ , KOther ->
 			let pr = print_context() in
-			typing_error ("Cannot add " ^ s_type pr e1.etype ^ " and " ^ s_type pr e2.etype) p
+			raise_typing_error ("Cannot add " ^ s_type pr e1.etype ^ " and " ^ s_type pr e2.etype) p
 		)
 	| OpAnd
 	| OpOr
@@ -334,9 +336,9 @@ let make_binop ctx op e1 e2 is_assign_op with_type p =
 	| OpNotEq ->
 		let e1,e2 = try
 			(* we only have to check one type here, because unification fails if one is Void and the other is not *)
-			(match follow e2.etype with TAbstract({a_path=[],"Void"},_) -> typing_error "Cannot compare Void" p | _ -> ());
+			(match follow e2.etype with TAbstract({a_path=[],"Void"},_) -> raise_typing_error "Cannot compare Void" p | _ -> ());
 			AbstractCast.cast_or_unify_raise ctx e2.etype e1 p,e2
-		with Error (Unify _,_,_) ->
+		with Error { err_message = Unify _ } ->
 			e1,AbstractCast.cast_or_unify ctx e1.etype e2 p
 		in
 		if not ctx.com.config.pf_supports_function_equality then begin match e1.eexpr, e2.eexpr with
@@ -382,7 +384,7 @@ let make_binop ctx op e1 e2 is_assign_op with_type p =
 		| KOther , _
 		| _ , KOther ->
 			let pr = print_context() in
-			typing_error ("Cannot compare " ^ s_type pr e1.etype ^ " and " ^ s_type pr e2.etype) p
+			raise_typing_error ("Cannot compare " ^ s_type pr e1.etype ^ " and " ^ s_type pr e2.etype) p
 		);
 		mk_op e1 e2 ctx.t.tbool
 	| OpBoolAnd
@@ -392,14 +394,14 @@ let make_binop ctx op e1 e2 is_assign_op with_type p =
 		unify ctx e2.etype b p;
 		mk_op e1 e2 b
 	| OpInterval ->
-		let t = Typeload.load_core_type ctx "IntIterator" in
-		unify ctx e1.etype tint e1.epos;
-		unify ctx e2.etype tint e2.epos;
+		let t = Typeload.load_instance ctx (mk_type_path (["std"],"IntIterator"),null_pos) false in
+		let e1 = AbstractCast.cast_or_unify_raise ctx tint e1 e1.epos in
+		let e2 = AbstractCast.cast_or_unify_raise ctx tint e2 e2.epos in
 		BinopSpecial (mk (TNew ((match t with TInst (c,[]) -> c | _ -> die "" __LOC__),[],[e1;e2])) t p,false)
 	| OpArrow ->
-		typing_error "Unexpected =>" p
+		raise_typing_error "Unexpected =>" p
 	| OpIn ->
-		typing_error "Unexpected in" p
+		raise_typing_error "Unexpected in" p
 	| OpNullCoal
 	| OpAssign
 	| OpAssignOp _ ->
@@ -416,13 +418,13 @@ let find_abstract_binop_overload ctx op e1 e2 a c tl left is_assign_op with_type
 				let t_expected = BinopResult.get_type result in
 				begin try
 					unify_raise tret t_expected p
-				with Error (Unify _,_,depth) ->
+				with Error { err_message = Unify _; err_depth = depth } ->
 					match follow tret with
 						| TAbstract(a,tl) when type_iseq (Abstract.get_underlying_type a tl) t_expected ->
 							()
 						| _ ->
 							let st = s_type (print_context()) in
-							typing_error ~depth (Printf.sprintf "The result of this operation (%s) is not compatible with declared return type %s" (st t_expected) (st tret)) p
+							raise_typing_error ~depth (Printf.sprintf "The result of this operation (%s) is not compatible with declared return type %s" (st t_expected) (st tret)) p
 				end;
 			end;
 			(*
@@ -496,10 +498,10 @@ let find_abstract_binop_overload ctx op e1 e2 a c tl left is_assign_op with_type
 					in
 					begin try
 						check e1 e2 false
-					with Error (Unify _,_,_) | Unify_error _ -> try
+					with Error { err_message = Unify _ } | Unify_error _ -> try
 						if not (Meta.has Meta.Commutative cf.cf_meta) then raise Not_found;
 						check e2 e1 true
-					with Not_found | Error (Unify _,_,_) | Unify_error _ ->
+					with Not_found | Error { err_message = Unify _ } | Unify_error _ ->
 						loop find_op ol
 					end
 				| _ ->
@@ -555,8 +557,8 @@ let type_assign ctx e1 e2 with_type p =
 	let e1 = !type_access_ref ctx (fst e1) (snd e1) (MSet (Some e2)) with_type in
 	let type_rhs with_type = try
 		type_expr ctx e2 with_type
-	with Error(e,p,depth) ->
-		check_error ctx e p depth;
+	with Error e ->
+		check_error ctx e;
 		Texpr.Builder.make_null t_dynamic (pos e2)
 	in
 	let assign_to e1 =
@@ -564,41 +566,45 @@ let type_assign ctx e1 e2 with_type p =
 		let e2 = AbstractCast.cast_or_unify ctx e1.etype e2 p in
 		check_assign ctx e1;
 		(match e1.eexpr , e2.eexpr with
-		| TLocal i1 , TLocal i2 when i1 == i2 -> typing_error "Assigning a value to itself" p
+		| TLocal i1 , TLocal i2 when i1 == i2 -> raise_typing_error "Assigning a value to itself" p
 		| TField ({ eexpr = TConst TThis },FInstance (_,_,f1)) , TField ({ eexpr = TConst TThis },FInstance (_,_,f2)) when f1 == f2 ->
-			typing_error "Assigning a value to itself" p
+			raise_typing_error "Assigning a value to itself" p
 		| _ , _ -> ());
 		mk (TBinop (OpAssign,e1,e2)) e1.etype p
 	in
-	match e1 with
-	| AKNo(_,p) ->
-		typing_error "This expression cannot be accessed for writing" p
-	| AKUsingField _ | AKSafeNav _ ->
-		typing_error "Invalid operation" p
-	| AKExpr { eexpr = TLocal { v_kind = VUser TVOLocalFunction; v_name = name } } ->
-		typing_error ("Cannot access function " ^ name ^ " for writing") p
-	| AKField fa ->
-		let ef = FieldAccess.get_field_expr fa FWrite in
-		assign_to ef
-	| AKExpr e1  ->
-		assign_to e1
-	| AKAccessor fa ->
-		let dispatcher = new call_dispatcher ctx (MSet (Some e2)) with_type p in
-		dispatcher#accessor_call fa [] [e2]
-	| AKAccess(a,tl,c,ebase,ekey) ->
-		let e2 = type_rhs WithType.value in
-		mk_array_set_call ctx (AbstractCast.find_array_write_access ctx a tl ekey e2 p) c ebase p
-	| AKResolve(sea,name) ->
-		let eparam = sea.se_this in
-		let e_name = Texpr.Builder.make_string ctx.t name null_pos in
-		(new call_dispatcher ctx (MCall [e2]) with_type p)#field_call sea.se_access [eparam;e_name] [e2]
-	| AKUsingAccessor sea ->
-		let fa_set = match FieldAccess.resolve_accessor sea.se_access (MSet (Some e2)) with
-			| AccessorFound fa -> fa
-			| _ -> typing_error "Could not resolve accessor" p
-		in
-		let dispatcher = new call_dispatcher ctx (MCall [e2]) with_type p in
-		dispatcher#field_call fa_set [sea.se_this] [e2]
+	let rec check_acc e1 = match e1 with
+		| AKNo(acc,p) ->
+			if not (Common.ignore_error ctx.com) then
+				raise_typing_error "This expression cannot be accessed for writing" p
+			else check_acc acc
+		| AKUsingField _ | AKSafeNav _ ->
+			raise_typing_error "Invalid operation" p
+		| AKExpr { eexpr = TLocal { v_kind = VUser TVOLocalFunction; v_name = name } } ->
+			raise_typing_error ("Cannot access function " ^ name ^ " for writing") p
+		| AKField fa ->
+			let ef = FieldAccess.get_field_expr fa FWrite in
+			assign_to ef
+		| AKExpr e1  ->
+			assign_to e1
+		| AKAccessor fa ->
+			let dispatcher = new call_dispatcher ctx (MSet (Some e2)) with_type p in
+			dispatcher#accessor_call fa [] [e2]
+		| AKAccess(a,tl,c,ebase,ekey) ->
+			let e2 = type_rhs WithType.value in
+			mk_array_set_call ctx (AbstractCast.find_array_write_access ctx a tl ekey e2 p) c ebase p
+		| AKResolve(sea,name) ->
+			let eparam = sea.se_this in
+			let e_name = Texpr.Builder.make_string ctx.t name null_pos in
+			(new call_dispatcher ctx (MCall [e2]) with_type p)#field_call sea.se_access [eparam;e_name] [e2]
+		| AKUsingAccessor sea ->
+			let fa_set = match FieldAccess.resolve_accessor sea.se_access (MSet (Some e2)) with
+				| AccessorFound fa -> fa
+				| _ -> raise_typing_error "Could not resolve accessor" p
+			in
+			let dispatcher = new call_dispatcher ctx (MCall [e2]) with_type p in
+			dispatcher#field_call fa_set [sea.se_this] [e2]
+	in
+	check_acc e1
 
 let type_non_assign_op ctx op e1 e2 is_assign_op abstract_overload_only with_type p =
 	(* If the with_type is an abstract which has exactly one applicable @:op method, we can promote it
@@ -670,10 +676,10 @@ let type_assign_op ctx op e1 e2 with_type p =
 		begin try
 			type_non_assign_op ctx op e1 e2 true true with_type p
 		with Not_found ->
-			typing_error "This expression cannot be accessed for writing" p
+			raise_typing_error "This expression cannot be accessed for writing" p
 		end
 	| AKUsingField _ | AKSafeNav _ ->
-		typing_error "Invalid operation" p
+		raise_typing_error "Invalid operation" p
 	| AKExpr e ->
 		let e,vr = process_lhs_expr ctx "lhs" e in
 		let e_rhs = type_binop2 ctx op e e2 true WithType.value p in
@@ -713,7 +719,7 @@ let type_assign_op ctx op e1 e2 with_type p =
 		let eget = BinopResult.to_texpr vr eget (fun e -> e) in
 		unify ctx eget.etype r_get p;
 		let cf_set,tf_set,r_set,ekey,eget = AbstractCast.find_array_write_access ctx a tl ekey eget p in
-		let et = type_module_type ctx (TClassDecl c) None p in
+		let et = type_module_type ctx (TClassDecl c) p in
 		let e = match cf_set.cf_expr,cf_get.cf_expr with
 			| None,None ->
 				let ea = mk (TArray(ebase,ekey)) r_get p in
@@ -728,7 +734,7 @@ let type_assign_op ctx op e1 e2 with_type p =
 					| el -> mk (TBlock el) r_set p
 				end
 			| _ ->
-				typing_error "Invalid array access getter/setter combination" p
+				raise_typing_error "Invalid array access getter/setter combination" p
 		in
 		save();
 		vr#to_texpr	e
@@ -748,7 +754,7 @@ let type_binop ctx op e1 e2 is_assign_op with_type p =
 	| OpAssign ->
 		type_assign ctx e1 e2 with_type p
 	| OpAssignOp (OpBoolAnd | OpBoolOr) ->
-		typing_error "The operators ||= and &&= are not supported" p
+		raise_typing_error "The operators ||= and &&= are not supported" p
 	| OpAssignOp op ->
 		type_assign_op ctx op e1 e2 with_type p
 	| _ ->
@@ -791,7 +797,7 @@ let type_unop ctx op flag e with_type p =
 			raise Not_found
 	in
 	let unexpected_spread p =
-		typing_error "Spread unary operator is only allowed for unpacking the last argument in a call with rest arguments" p
+		raise_typing_error "Spread unary operator is only allowed for unpacking the last argument in a call with rest arguments" p
 	in
 	let make e =
 		let check_int () =
@@ -861,7 +867,7 @@ let type_unop ctx op flag e with_type p =
 			begin try
 				try_abstract_unop_overloads (acc_get ctx acc)
 			with Not_found ->
-				typing_error "This expression cannot be accessed for writing" p
+				raise_typing_error "This expression cannot be accessed for writing" p
 			end
 		| AKExpr e ->
 			find_overload_or_make e
@@ -920,4 +926,4 @@ let type_unop ctx op flag e with_type p =
 				find_overload_or_make e
 			end
 		| AKUsingField _ | AKResolve _ | AKSafeNav _ ->
-			typing_error "Invalid operation" p
+			raise_typing_error "Invalid operation" p

@@ -19,7 +19,6 @@
 
 open Ast
 open Globals
-open Reification
 open DisplayTypes.DisplayMode
 open DisplayPosition
 
@@ -270,8 +269,8 @@ let precedence op =
 	| OpEq | OpNotEq | OpGt | OpLt | OpGte | OpLte -> 6, left
 	| OpInterval -> 7, left
 	| OpBoolAnd -> 8, left
-	| OpBoolOr -> 9, left
-	| OpArrow | OpNullCoal -> 10, right
+	| OpBoolOr | OpNullCoal -> 9, left
+	| OpArrow -> 10, right
 	| OpAssign | OpAssignOp _ -> 11, right
 
 let is_higher_than_ternary = function

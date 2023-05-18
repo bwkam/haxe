@@ -87,6 +87,7 @@ class Compiler {
 		Removes a (static) field from a given class by name.
 		An error is thrown when `className` or `field` is invalid.
 	**/
+	@:deprecated
 	public static function removeField(className:String, field:String, ?isStatic:Bool) {
 		if (!path.match(className))
 			throw "Invalid " + className;
@@ -103,6 +104,7 @@ class Compiler {
 		Set the type of a (static) field at a given class by name.
 		An error is thrown when `className` or `field` is invalid.
 	**/
+	@:deprecated
 	public static function setFieldType(className:String, field:String, type:String, ?isStatic:Bool) {
 		if (!path.match(className))
 			throw "Invalid " + className;
@@ -119,6 +121,7 @@ class Compiler {
 		Add metadata to a (static) field or class by name.
 		An error is thrown when `className` or `field` is invalid.
 	**/
+	@:deprecated
 	public static function addMetadata(meta:String, className:String, ?field:String, ?isStatic:Bool) {
 		if (!path.match(className))
 			throw "Invalid " + className;
@@ -175,6 +178,17 @@ class Compiler {
 		return load("get_configuration", 0)();
 		#else
 		return null;
+		#end
+	}
+
+	/**
+		Sets the target configuration.
+
+		Usage of this function outside a macro context does nothing.
+	**/
+	public static function setPlatformConfiguration(config:PlatformConfig):Void {
+		#if (neko || eval)
+		load("set_platform_configuration", 1)(config);
 		#end
 	}
 
@@ -271,7 +285,8 @@ class Compiler {
 				found = true;
 				for (file in sys.FileSystem.readDirectory(path)) {
 					if (StringTools.endsWith(file, ".hx") && file.substr(0, file.length - 3).indexOf(".") < 0) {
-						if( file == "import.hx" ) continue;
+						if (file == "import.hx")
+							continue;
 						var cl = prefix + file.substr(0, file.length - 3);
 						if (skip(cl))
 							continue;
@@ -481,8 +496,9 @@ class Compiler {
 	**/
 	public static function registerMetadataDescriptionFile(path:String, ?source:String):Void {
 		var f = sys.io.File.getContent(path);
-		var content:Array<MetadataDescription> =  haxe.Json.parse(f);
-		for (m in content) registerCustomMetadata(m, source);
+		var content:Array<MetadataDescription> = haxe.Json.parse(f);
+		for (m in content)
+			registerCustomMetadata(m, source);
 	}
 
 	/**
@@ -491,8 +507,9 @@ class Compiler {
 	**/
 	public static function registerDefinesDescriptionFile(path:String, ?source:String):Void {
 		var f = sys.io.File.getContent(path);
-		var content:Array<DefineDescription> =  haxe.Json.parse(f);
-		for (d in content) registerCustomDefine(d, source);
+		var content:Array<DefineDescription> = haxe.Json.parse(f);
+		for (d in content)
+			registerCustomDefine(d, source);
 	}
 
 	/**
@@ -536,7 +553,6 @@ class Compiler {
 		load("flush_disk_cache", 0)();
 		#end
 	}
-
 	#end
 
 	#if (js || lua || macro)
@@ -551,7 +567,7 @@ class Compiler {
 
 				var f = try sys.io.File.getContent(Context.resolvePath(file)) catch (e:Dynamic) Context.error(Std.string(e), Context.currentPos());
 				var p = Context.currentPos();
-				if(Context.defined("js")) {
+				if (Context.defined("js")) {
 					macro @:pos(p) js.Syntax.plainCode($v{f});
 				} else {
 					macro @:pos(p) untyped __lua__($v{f});
@@ -715,7 +731,7 @@ typedef CompilerConfiguration = {
 	/**
 		The target platform.
 	**/
-	final platform:haxe.display.Display.Platform;
+	final platform:Platform;
 
 	/**
 		The compilation configuration for the target platform.
@@ -737,7 +753,23 @@ typedef CompilerConfiguration = {
 
 		For example, the "java" package is "Forbidden" when the target platform is Python.
 	**/
-	final packageRules:Map<String,PackageRule>;
+	final packageRules:Map<String, PackageRule>;
+}
+
+enum Platform {
+	Cross;
+	Js;
+	Lua;
+	Neko;
+	Flash;
+	Php;
+	Cpp;
+	Cs;
+	Java;
+	Python;
+	Hl;
+	Eval;
+	CustomTarget(name:String);
 }
 
 enum PackageRule {
