@@ -330,17 +330,18 @@ let type_field cfg ctx e i p mode (with_type : WithType.t) =
 			)
 		| TAnon a ->
 			(try
-				let f = PMap.find i a.a_fields in
-				if has_class_field_flag f CfImpl && not (has_class_field_flag f CfEnum) then display_error ctx.com "Cannot access non-static abstract field statically" pfield;
 				match !(a.a_status) with
 				| EnumStatics en ->
-					let c = try PMap.find f.cf_name en.e_constrs with Not_found -> die "" __LOC__ in
+					let c = PMap.find i en.e_constrs in
 					let fmode = FEnum (en,c) in
 					let t = enum_field_type ctx en c p in
 					AKExpr (mk (TField (e,fmode)) t p)
 				| Statics c ->
+					let f = PMap.find i c.cl_statics in
+					if has_class_field_flag f CfImpl && not (has_class_field_flag f CfEnum) then display_error ctx.com "Cannot access non-static abstract field statically" pfield;
 					field_access f (FHStatic c)
 				| _ ->
+					let f = PMap.find i a.a_fields in
 					field_access f FHAnon
 			with Not_found ->
 				match !(a.a_status) with

@@ -44,7 +44,7 @@ class Metadata extends DisplayTestCase {
 	**/
 	function testArgs() {
 		eq(range(1, 2), position(pos(3)));
-		eq("Class<cases.SomeOther>", type(pos(3)));
+		eq("{ Statics cases.SomeOther }", type(pos(3)));
 	}
 
 	/**

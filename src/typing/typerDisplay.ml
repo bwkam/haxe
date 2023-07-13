@@ -98,7 +98,7 @@ let completion_item_of_expr ctx e =
 			end
 		| TTypeExpr (TClassDecl {cl_kind = KAbstractImpl a}) ->
 			Display.merge_core_doc ctx (TAbstractDecl a);
-			let t = TType(abstract_module_type a (extract_param_types a.a_params),[]) in
+			let t = abstract_module_type a (extract_param_types a.a_params) in
 			let t = tpair t in
 			make_ci_type (CompletionModuleType.of_module_type (TAbstractDecl a)) ImportStatus.Imported (Some t)
 		| TTypeExpr mt ->

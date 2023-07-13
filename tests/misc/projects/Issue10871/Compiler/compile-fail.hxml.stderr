@@ -1,1 +1,1 @@
-MainFail.hx:4: characters 22-38 : Class<haxe.macro.Compiler> has no field getConfiguration
+MainFail.hx:4: characters 22-38 : { Statics haxe.macro.Compiler } has no field getConfiguration

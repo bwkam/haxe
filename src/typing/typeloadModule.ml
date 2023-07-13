@@ -144,8 +144,9 @@ module ModuleLevel = struct
 					e_extern = List.mem EExtern d.d_flags;
 					e_constrs = PMap.empty;
 					e_names = [];
-					e_type = enum_module_type m path p;
+					e_type = t_dynamic;
 				} in
+				e.e_type <- enum_module_type e;
 				if not e.e_extern then check_type_name name d.d_meta;
 				decls := (TEnumDecl e, decl) :: !decls;
 				acc
@@ -536,8 +537,6 @@ module TypeLevel = struct
 		) (!constructs);
 		e.e_names <- List.rev !names;
 		e.e_extern <- e.e_extern;
-		e.e_type.t_params <- e.e_params;
-		e.e_type.t_type <- mk_anon ~fields:!fields (ref (EnumStatics e));
 		if !is_flat then e.e_meta <- (Meta.FlatEnum,[],null_pos) :: e.e_meta;
 		if Meta.has Meta.InheritDoc e.e_meta then
 			delay ctx PConnectField (fun() -> InheritDoc.build_enum_doc ctx e);

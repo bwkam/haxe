@@ -264,19 +264,13 @@ end
 let no_meta = []
 
 let class_module_type c =
-	let path = ([],"Class<" ^ (s_type_path c.cl_path) ^ ">") in
-	let t = mk_anon ~fields:c.cl_statics (ref (Statics c)) in
-	{ (mk_typedef c.cl_module path c.cl_pos null_pos t) with t_private = true}
+	mk_anon ~fields:c.cl_statics (ref (Statics c))
 
-let enum_module_type m path p  =
-	let path = ([], "Enum<" ^ (s_type_path path) ^ ">") in
-	let t = mk_mono() in
-	{(mk_typedef m path p null_pos t) with t_private = true}
+let enum_module_type en =
+	mk_anon (ref (EnumStatics en))
 
 let abstract_module_type a tl =
-	let path = ([],Printf.sprintf "Abstract<%s%s>" (s_type_path a.a_path) (s_type_params (ref []) tl)) in
-	let t = mk_anon (ref (AbstractStatics a)) in
-	{(mk_typedef a.a_module path a.a_pos null_pos t) with t_private = true}
+	mk_anon (ref (AbstractStatics a))
 
 module TClass = struct
 	let get_member_fields' self_too c0 tl =

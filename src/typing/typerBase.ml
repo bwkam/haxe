@@ -198,10 +198,9 @@ let type_module_type ctx t p =
 			loop mt None
 		| TClassDecl c ->
 			let t_tmp = class_module_type c in
-			mk (TTypeExpr (TClassDecl c)) (TType (t_tmp,[])) p
+			mk (TTypeExpr (TClassDecl c)) t_tmp p
 		| TEnumDecl e ->
-			let types = (match tparams with None -> Monomorph.spawn_constrained_monos (fun t -> t) e.e_params | Some l -> l) in
-			mk (TTypeExpr (TEnumDecl e)) (TType (e.e_type,types)) p
+			mk (TTypeExpr (TEnumDecl e)) (enum_module_type e) p
 		| TTypeDecl s ->
 			let t = apply_typedef s (List.map (fun _ -> spawn_monomorph ctx p) s.t_params) in
 			DeprecationCheck.check_typedef (create_deprecation_context ctx) s p;
@@ -219,7 +218,7 @@ let type_module_type ctx t p =
 		| TAbstractDecl a ->
 			if not (Meta.has Meta.RuntimeValue a.a_meta) then raise_typing_error (s_type_path a.a_path ^ " is not a value") p;
 			let t_tmp = abstract_module_type a [] in
-			mk (TTypeExpr (TAbstractDecl a)) (TType (t_tmp,[])) p
+			mk (TTypeExpr (TAbstractDecl a)) t_tmp p
 	in
 	loop t None
 

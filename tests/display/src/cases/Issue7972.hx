@@ -13,7 +13,7 @@ class Issue7972 extends DisplayTestCase {
 		}
 	**/
 	function test() {
-		eq("Class<Std>", type(pos(1)));
+		eq("{ Statics Std }", type(pos(1)));
 		eq("(x : Float) -> Int", type(pos(2)));
 		eq("Float", type(pos(3)));
 	}
