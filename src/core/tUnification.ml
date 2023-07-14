@@ -303,11 +303,18 @@ let link e a b =
 		| TLazy f ->
 			loop (lazy_type f)
 		| TAnon a ->
-			try
-				PMap.iter (fun _ f -> if loop f.cf_type then raise Exit) a.a_fields;
+			begin match !(a.a_status) with
+			| Statics _ | EnumStatics _ | AbstractStatics _ ->
+				(* Not sure if this is correct but this is what happened when all these were hidden behind a
+				   TType as well. *)
 				false
-			with
-				Exit -> true
+			| _ ->
+				try
+					PMap.iter (fun _ f -> if loop f.cf_type then raise Exit) a.a_fields;
+					false
+				with
+					Exit -> true
+			end
 	in
 	(* tell is already a ~= b *)
 	if loop b then
@@ -338,6 +345,12 @@ let fast_eq_check type_param_check a b =
 		c1 == c2 && List.for_all2 type_param_check l1 l2
 	| TAbstract (a1,l1), TAbstract (a2,l2) ->
 		a1 == a2 && List.for_all2 type_param_check l1 l2
+	| TAnon an1, TAnon an2 ->
+		(match !(an2.a_status), !(an1.a_status) with
+		| Statics c, Statics c2 -> c == c2
+		| EnumStatics e, EnumStatics e2 -> e == e2
+		| AbstractStatics a, AbstractStatics a2 -> a == a2
+		| _ -> false)
 	| _ , _ ->
 		false
 
